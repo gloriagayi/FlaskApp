@@ -1,4 +1,4 @@
-name: CI Pipeline
+name: CI Pipeline Complete
 
 on:
   push:
@@ -10,7 +10,7 @@ on:
 
 jobs:
   test:
-    name: Run Tests
+    name: Run Unit Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -31,10 +31,23 @@ jobs:
         run: |
           pytest -v
 
-  build-and-push:
-    name: Build and Push Docker Image
+  docker-build:
+    name: Build Docker Image
     runs-on: ubuntu-latest
-    needs: test  # N'exécute que si les tests passent
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Build Docker image
+        run: |
+          docker build -t flaskapp:test .
+
+  push-to-registries:
+    name: Push to Docker Registries
+    runs-on: ubuntu-latest
+    needs: [test, docker-build]
+    if: success()  
 
     steps:
       - name: Checkout code
@@ -46,13 +59,46 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build Docker image
+      - name: Build and Push to Docker Hub
         run: |
           docker build -t ${{ secrets.DOCKER_USERNAME }}/flaskapp:latest .
-
-      - name: Push Docker image to Docker Hub
-        run: |
           docker push ${{ secrets.DOCKER_USERNAME }}/flaskapp:latest
 
-      - name: Log out from Docker Hub
-        run: docker logout
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push to GitHub Container Registry
+        run: |
+          docker tag ${{ secrets.DOCKER_USERNAME }}/flaskapp:latest ghcr.io/${{ github.repository_owner }}/flaskapp:latest
+          docker push ghcr.io/${{ github.repository_owner }}/flaskapp:latest
+
+  notify:
+    name: Send Notification
+    runs-on: ubuntu-latest
+    needs: [test, docker-build, push-to-registries]
+    if: failure()
+
+    steps:
+      - name: Send email on failure
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "CI Pipeline Failed - FlaskApp"
+          body: |
+            The CI pipeline failed!
+            
+            Repository: ${{ github.repository }}
+            Commit: ${{ github.sha }}
+            Branch: ${{ github.ref }}
+            Author: ${{ github.actor }}
+            
+            Check the logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          to: esthergayi29@gmail.com
+          from: GitHub Actions CI
